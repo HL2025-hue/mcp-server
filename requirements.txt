@@ -1,5 +1,7 @@
 fastapi
+pydantic
 pandas
-uvicorn
 openpyxl
+uvicorn
 python-multipart
+requests  
