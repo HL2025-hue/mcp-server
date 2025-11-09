@@ -1,21 +1,20 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, Any
 import pandas as pd
+import io
 import os
 import tempfile
-import io
-import requests
+import mimetypes
 import traceback
+import requests
 
 app = FastAPI()
 
-# Health check
 @app.get("/")
 def root():
     return {"message": "Preprocessing server is live ✅"}
 
-# Input schema expected by Dify
 class ToolInput(BaseModel):
     file_path: str
 
@@ -26,87 +25,80 @@ def run_tool(request: ToolInput):
         return process_site_diary(file_path)
     except Exception as e:
         return {
-            "error": "Failed to load file.",
+            "error": "Failed to process file.",
             "file_path": file_path,
             "exception": str(e),
             "traceback": traceback.format_exc()
         }
 
-# Robust file loader: tries Excel first, then CSV with multiple encodings
+# -----------------------------
+# Load file from public URL
+# -----------------------------
 def load_file(file_url: str) -> pd.DataFrame:
     response = requests.get(file_url)
     response.raise_for_status()
     content = response.content
 
-    # Try loading as Excel
+    # Try Excel
     try:
+        print("Trying Excel...")
         return pd.read_excel(io.BytesIO(content), engine="openpyxl")
     except Exception:
         pass
 
-    # Try loading as UTF-8 CSV
+    # Try CSV UTF-8
     try:
+        print("Trying CSV (UTF-8)...")
         return pd.read_csv(io.BytesIO(content), encoding="utf-8", on_bad_lines="skip")
     except Exception:
         pass
 
-    # Try ISO-8859-1 fallback
+    # Try CSV ISO-8859-1
     try:
+        print("Trying CSV (ISO-8859-1)...")
         return pd.read_csv(io.BytesIO(content), encoding="ISO-8859-1", on_bad_lines="skip")
-    except Exception:
-        raise ValueError(f"Unsupported or unreadable file format from: {file_url}")
+    except Exception as e:
+        raise ValueError(f"All file decoding attempts failed for: {file_url} — {str(e)}")
 
-# Core processing logic
-def process_site_diary(file_path: str) -> dict:
-    df = load_file(file_path)
+# -----------------------------
+# Pre-process & clean logic
+# -----------------------------
+def process_site_diary(file_url: str) -> dict:
+    df = load_file(file_url)
 
-    # Convert flags to booleans
+    # Convert flags to boolean
     df["Ignore Entry"] = df["Ignore Entry"].astype(str).str.lower().isin(["true", "1", "yes"])
     df["Internal Use Only"] = df["Internal Use Only"].astype(str).str.lower().isin(["true", "1", "yes"])
 
-    # Remove flagged entries
+    # Drop flagged or missing
     df = df[(df["Ignore Entry"] != True) & (df["Internal Use Only"] != True)]
-
-    # Drop rows with missing description or category
     df = df.dropna(subset=["Description", "Category"])
 
-    # Drop duplicate entries
+    # Deduplication
     df_before_dedup = df.copy()
     df = df.drop_duplicates(subset=["From", "Until", "Ring", "Category", "Description"])
+    filtered_out_df = pd.merge(df_before_dedup, df, how='outer', indicator=True).query('_merge == "left_only"').drop(columns=['_merge'])
 
-    # Get filtered-out duplicates
-    filtered_out_df = pd.merge(
-        df_before_dedup,
-        df,
-        how='outer',
-        indicator=True
-    ).query('_merge == "left_only"').drop(columns=['_merge'])
-
-    # Remove classes with <2 examples
+    # Filter categories with <2 entries
     class_counts = df["Category"].value_counts()
     valid_classes = class_counts[class_counts >= 2].index.tolist()
     df = df[df["Category"].isin(valid_classes)]
-
-    # Store removed classes
     filtered_out_classes = class_counts[class_counts < 2].index.tolist()
 
-    # Fix shift column
+    # Fix shift and duration
     df["Shift_Type"] = df["Shift"].astype(str).str.extract(r'^(Day|Night)', expand=False)
-
-    # Convert duration to numeric
     df["Duration_min"] = df["Duration"].astype(str).str.extract(r'(\d+)').astype(float)
 
-    # Save to temporary directory
+    # Export cleaned + filtered CSVs
     output_dir = tempfile.gettempdir()
-    cleaned_output_path = os.path.join(output_dir, "final_cleaned_site_diary.csv")
-    filtered_output_path = os.path.join(output_dir, "filtered_out_site_diary.csv")
-
-    df.to_csv(cleaned_output_path, index=False, encoding='utf-8-sig')
-    filtered_out_df.to_csv(filtered_output_path, index=False, encoding='utf-8-sig')
+    cleaned_path = os.path.join(output_dir, "final_cleaned_site_diary.csv")
+    filtered_path = os.path.join(output_dir, "filtered_out_site_diary.csv")
+    df.to_csv(cleaned_path, index=False, encoding='utf-8-sig')
+    filtered_out_df.to_csv(filtered_path, index=False, encoding='utf-8-sig')
 
     return {
-        "cleaned_file_path": cleaned_output_path,
-        "filtered_file_path": filtered_output_path,
+        "cleaned_file_path": cleaned_path,
+        "filtered_file_path": filtered_path,
         "num_cleaned_rows": len(df),
         "num_filtered_rows": len(filtered_out_df),
         "categories_retained": valid_classes,
@@ -115,7 +107,7 @@ def process_site_diary(file_path: str) -> dict:
         "filtered_out_df_dict": filtered_out_df.to_dict(orient='records')
     }
 
-# Local run support (optional for Render)
+# If run locally
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
