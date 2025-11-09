@@ -90,9 +90,9 @@ def process_site_diary(file_path: str) -> dict:
         indicator=True
     ).query('_merge == "left_only"').drop(columns=['_merge'])
 
-    # --- Remove categories with fewer than 2 entries ---
+    # --- Remove categories with fewer than 1 entries ---
     class_counts = df["Category"].value_counts()
-    valid_classes = class_counts[class_counts >= 2].index.tolist()
+    valid_classes = class_counts[class_counts >= 1].index.tolist()
     df = df[df["Category"].isin(valid_classes)]
 
     filtered_out_classes = class_counts[class_counts < 2].index.tolist()
