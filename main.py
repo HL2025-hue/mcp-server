@@ -1,23 +1,33 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Dict, Any
 import pandas as pd
 import io
 import os
 import tempfile
-import mimetypes
 import traceback
 import requests
 
 app = FastAPI()
 
+
+# -----------------------------
+# Root health check
+# -----------------------------
 @app.get("/")
 def root():
     return {"message": "Preprocessing server is live ✅"}
 
+
+# -----------------------------
+# Request model
+# -----------------------------
 class ToolInput(BaseModel):
     file_path: str
 
+
+# -----------------------------
+# API endpoint
+# -----------------------------
 @app.post("/run")
 def run_tool(request: ToolInput):
     file_path = request.file_path
@@ -31,12 +41,10 @@ def run_tool(request: ToolInput):
             "traceback": traceback.format_exc()
         }
 
-# -----------------------------
-# Load file from public URL
-# -----------------------------
-import io
-import requests
 
+# -----------------------------
+# File loader (supports CSV + Excel)
+# -----------------------------
 def load_file(file_url: str) -> pd.DataFrame:
     print(f"📥 Fetching file from URL: {file_url}")
     response = requests.get(file_url)
@@ -44,7 +52,7 @@ def load_file(file_url: str) -> pd.DataFrame:
     content = response.content
     print(f"📦 Fetched {len(content)} bytes")
 
-    # Try loading as Excel
+    # Try Excel
     try:
         df = pd.read_excel(io.BytesIO(content), engine="openpyxl")
         print("✅ Loaded as Excel file")
@@ -52,7 +60,7 @@ def load_file(file_url: str) -> pd.DataFrame:
     except Exception as e:
         print(f"❌ Failed to load as Excel: {e}")
 
-    # Try loading as UTF-8 CSV
+    # Try UTF-8 CSV
     try:
         df = pd.read_csv(io.BytesIO(content), encoding="utf-8", on_bad_lines="skip")
         print("✅ Loaded as UTF-8 CSV")
@@ -60,7 +68,7 @@ def load_file(file_url: str) -> pd.DataFrame:
     except Exception as e:
         print(f"❌ Failed to load as UTF-8 CSV: {e}")
 
-    # Try loading as ISO-8859-1 CSV
+    # Try ISO-8859-1 CSV
     try:
         df = pd.read_csv(io.BytesIO(content), encoding="ISO-8859-1", on_bad_lines="skip")
         print("✅ Loaded as ISO-8859-1 CSV")
@@ -69,11 +77,18 @@ def load_file(file_url: str) -> pd.DataFrame:
         print(f"❌ Failed to load as ISO-8859-1 CSV: {e}")
         raise ValueError(f"Unsupported or unreadable file format from: {file_url}")
 
+
 # -----------------------------
-# Pre-process & clean logic
+# Preprocessing logic
 # -----------------------------
 def process_site_diary(file_url: str) -> dict:
     df = load_file(file_url)
+
+    # Ensure all expected columns exist
+    required_cols = ["Ignore Entry", "Internal Use Only", "Description", "Category", "From", "Until", "Ring", "Shift", "Duration"]
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
 
     # Convert flags to boolean
     df["Ignore Entry"] = df["Ignore Entry"].astype(str).str.lower().isin(["true", "1", "yes"])
@@ -96,27 +111,36 @@ def process_site_diary(file_url: str) -> dict:
 
     # Fix shift and duration
     df["Shift_Type"] = df["Shift"].astype(str).str.extract(r'^(Day|Night)', expand=False)
-    df["Duration_min"] = df["Duration"].astype(str).str.extract(r'(\d+)').astype(float)
+    df["Duration_min"] = pd.to_numeric(df["Duration"].astype(str).str.extract(r'(\d+)')[0], errors="coerce")
+
+    # Replace NaN/NaT with None for JSON-safe serialization
+    df_json = df.where(pd.notnull(df), None)
+    filtered_json = filtered_out_df.where(pd.notnull(filtered_out_df), None)
 
     # Export cleaned + filtered CSVs
     output_dir = tempfile.gettempdir()
     cleaned_path = os.path.join(output_dir, "final_cleaned_site_diary.csv")
     filtered_path = os.path.join(output_dir, "filtered_out_site_diary.csv")
-    df.to_csv(cleaned_path, index=False, encoding='utf-8-sig')
-    filtered_out_df.to_csv(filtered_path, index=False, encoding='utf-8-sig')
+    df_json.to_csv(cleaned_path, index=False, encoding='utf-8-sig')
+    filtered_json.to_csv(filtered_path, index=False, encoding='utf-8-sig')
+
+    print(f"✅ Processed successfully. Cleaned rows: {len(df_json)}, Filtered out: {len(filtered_json)}")
 
     return {
         "cleaned_file_path": cleaned_path,
         "filtered_file_path": filtered_path,
-        "num_cleaned_rows": len(df),
-        "num_filtered_rows": len(filtered_out_df),
+        "num_cleaned_rows": len(df_json),
+        "num_filtered_rows": len(filtered_json),
         "categories_retained": valid_classes,
         "categories_removed": filtered_out_classes,
-        "cleaned_df_dict": df.to_dict(orient='records'),
-        "filtered_out_df_dict": filtered_out_df.to_dict(orient='records')
+        "cleaned_df_dict": df_json.to_dict(orient='records'),
+        "filtered_out_df_dict": filtered_json.to_dict(orient='records')
     }
 
-# If run locally
+
+# -----------------------------
+# Run locally (Render ignores this)
+# -----------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
