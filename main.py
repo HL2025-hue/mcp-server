@@ -34,31 +34,40 @@ def run_tool(request: ToolInput):
 # -----------------------------
 # Load file from public URL
 # -----------------------------
+import io
+import requests
+
 def load_file(file_url: str) -> pd.DataFrame:
+    print(f"📥 Fetching file from URL: {file_url}")
     response = requests.get(file_url)
     response.raise_for_status()
     content = response.content
+    print(f"📦 Fetched {len(content)} bytes")
 
-    # Try Excel
+    # Try loading as Excel
     try:
-        print("Trying Excel...")
-        return pd.read_excel(io.BytesIO(content), engine="openpyxl")
-    except Exception:
-        pass
-
-    # Try CSV UTF-8
-    try:
-        print("Trying CSV (UTF-8)...")
-        return pd.read_csv(io.BytesIO(content), encoding="utf-8", on_bad_lines="skip")
-    except Exception:
-        pass
-
-    # Try CSV ISO-8859-1
-    try:
-        print("Trying CSV (ISO-8859-1)...")
-        return pd.read_csv(io.BytesIO(content), encoding="ISO-8859-1", on_bad_lines="skip")
+        df = pd.read_excel(io.BytesIO(content), engine="openpyxl")
+        print("✅ Loaded as Excel file")
+        return df
     except Exception as e:
-        raise ValueError(f"All file decoding attempts failed for: {file_url} — {str(e)}")
+        print(f"❌ Failed to load as Excel: {e}")
+
+    # Try loading as UTF-8 CSV
+    try:
+        df = pd.read_csv(io.BytesIO(content), encoding="utf-8", on_bad_lines="skip")
+        print("✅ Loaded as UTF-8 CSV")
+        return df
+    except Exception as e:
+        print(f"❌ Failed to load as UTF-8 CSV: {e}")
+
+    # Try loading as ISO-8859-1 CSV
+    try:
+        df = pd.read_csv(io.BytesIO(content), encoding="ISO-8859-1", on_bad_lines="skip")
+        print("✅ Loaded as ISO-8859-1 CSV")
+        return df
+    except Exception as e:
+        print(f"❌ Failed to load as ISO-8859-1 CSV: {e}")
+        raise ValueError(f"Unsupported or unreadable file format from: {file_url}")
 
 # -----------------------------
 # Pre-process & clean logic
