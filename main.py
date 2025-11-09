@@ -82,3 +82,11 @@ def process_site_diary(inputs: dict) -> dict:
         "cleaned_df_dict": df.to_dict(orient='records'),
         "filtered_out_df_dict": filtered_out_df.to_dict(orient='records')
     }
+
+# main.py
+
+# Existing code...
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
