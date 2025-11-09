@@ -9,7 +9,6 @@ import requests
 
 app = FastAPI()
 
-
 # -----------------------------
 # Root health check
 # -----------------------------
@@ -113,7 +112,7 @@ def process_site_diary(file_url: str) -> dict:
     df["Shift_Type"] = df["Shift"].astype(str).str.extract(r'^(Day|Night)', expand=False)
     df["Duration_min"] = pd.to_numeric(df["Duration"].astype(str).str.extract(r'(\d+)')[0], errors="coerce")
 
-    # Replace NaN/NaT with None for JSON-safe serialization
+    # Convert NaN/NaT to None before JSON serialization
     df_json = df.where(pd.notnull(df), None)
     filtered_json = filtered_out_df.where(pd.notnull(filtered_out_df), None)
 
