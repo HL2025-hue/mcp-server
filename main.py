@@ -1,73 +1,49 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Any
 import pandas as pd
 import os
 import tempfile
-import traceback
 
 app = FastAPI()
 
-# ---------------------------------------------------
-# Root route to check if app is live
-# ---------------------------------------------------
-@app.get("/")
-def home():
-    return {"message": "Preprocessing server is live ✅"}
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
-# ---------------------------------------------------
-# Input schema expected by Dify
-# ---------------------------------------------------
+# -----------------------------------------------------------------------
+# Accepts a flat file_path instead of nested "inputs"
+# -----------------------------------------------------------------------
 class ToolInput(BaseModel):
-    inputs: Dict[str, Any]
+    file_path: str
 
 @app.post("/run")
 def run_tool(request: ToolInput):
-    try:
-        inputs = request.inputs
-        return process_site_diary(inputs)
-    except Exception as e:
-        return {
-            "error": "An unexpected error occurred during processing.",
-            "exception": str(e),
-            "traceback": traceback.format_exc()
-        }
+    return process_site_diary({"file_path": request.file_path})
 
-# ---------------------------------------------------
-# Processing function
-# ---------------------------------------------------
+@app.get("/")
+def root():
+    return {"message": "Preprocessing server is live ✅"}
+
+# -----------------------------------------------------------------------
+# Data pre-processing logic
+# -----------------------------------------------------------------------
 def process_site_diary(inputs: dict) -> dict:
     file_path = inputs["file_path"]
 
     try:
-        df = pd.read_excel(file_path)
+        df = pd.read_csv(file_path) if file_path.endswith(".csv") else pd.read_excel(file_path)
     except Exception as e:
         return {
-            "error": "Failed to load Excel file.",
+            "error": "Failed to load file.",
             "file_path": file_path,
-            "exception": str(e),
-            "traceback": traceback.format_exc()
+            "exception": str(e)
         }
 
-    # Convert flags to booleans
     df["Ignore Entry"] = df["Ignore Entry"].astype(str).str.lower().isin(["true", "1", "yes"])
     df["Internal Use Only"] = df["Internal Use Only"].astype(str).str.lower().isin(["true", "1", "yes"])
-
-    # Remove flagged entries
     df = df[(df["Ignore Entry"] != True) & (df["Internal Use Only"] != True)]
-
-    # Drop rows with missing description or category
     df = df.dropna(subset=["Description", "Category"])
-
-    # Drop duplicate entries
+    
     df_before_dedup = df.copy()
     df = df.drop_duplicates(subset=["From", "Until", "Ring", "Category", "Description"])
 
-    # Get filtered-out duplicates
     filtered_out_df = pd.merge(
         df_before_dedup,
         df,
@@ -75,26 +51,18 @@ def process_site_diary(inputs: dict) -> dict:
         indicator=True
     ).query('_merge == "left_only"').drop(columns=['_merge'])
 
-    # Remove classes with <2 examples
     class_counts = df["Category"].value_counts()
     valid_classes = class_counts[class_counts >= 2].index.tolist()
     df = df[df["Category"].isin(valid_classes)]
 
-    # Category mappings
     unique_labels = sorted(df["Category"].unique())
     label2id = {label: idx for idx, label in enumerate(unique_labels)}
     id2label = {idx: label for label, idx in label2id.items()}
-
-    # Store removed classes
     filtered_out_classes = class_counts[class_counts < 2].index.tolist()
 
-    # Fix shift column
     df["Shift_Type"] = df["Shift"].astype(str).str.extract(r'^(Day|Night)', expand=False)
-
-    # Convert duration to numeric
     df["Duration_min"] = df["Duration"].astype(str).str.extract(r'(\d+)').astype(float)
 
-    # Export files to temp dir
     output_dir = tempfile.gettempdir()
     cleaned_output_path = os.path.join(output_dir, "final_cleaned_site_diary.csv")
     filtered_output_path = os.path.join(output_dir, "filtered_out_site_diary.csv")
@@ -102,7 +70,6 @@ def process_site_diary(inputs: dict) -> dict:
     df.to_csv(cleaned_output_path, index=False, encoding='utf-8-sig')
     filtered_out_df.to_csv(filtered_output_path, index=False, encoding='utf-8-sig')
 
-    # Return results
     return {
         "cleaned_file_path": cleaned_output_path,
         "filtered_file_path": filtered_output_path,
@@ -114,9 +81,6 @@ def process_site_diary(inputs: dict) -> dict:
         "filtered_out_df_dict": filtered_out_df.to_dict(orient='records')
     }
 
-# ---------------------------------------------------
-# Launch server locally (not used on Render)
-# ---------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
