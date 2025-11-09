@@ -4,22 +4,21 @@ from typing import Dict
 import pandas as pd
 import os
 import tempfile
-import traceback
-import requests
 import io
+import requests
+import traceback
 
 app = FastAPI()
 
-# Health check route
+# Health check
 @app.get("/")
 def root():
     return {"message": "Preprocessing server is live ✅"}
 
-# Input schema for the API
+# Input schema expected by Dify
 class ToolInput(BaseModel):
     file_path: str
 
-# Route to process the diary file
 @app.post("/run")
 def run_tool(request: ToolInput):
     file_path = request.file_path
@@ -33,21 +32,31 @@ def run_tool(request: ToolInput):
             "traceback": traceback.format_exc()
         }
 
-# Load file based on content type (not just file extension)
-def load_file(file_path: str) -> pd.DataFrame:
-    response = requests.get(file_path)
+# Robust file loader: tries Excel first, then CSV with multiple encodings
+def load_file(file_url: str) -> pd.DataFrame:
+    response = requests.get(file_url)
     response.raise_for_status()
+    content = response.content
 
-    content_type = response.headers.get("Content-Type", "")
+    # Try loading as Excel
+    try:
+        return pd.read_excel(io.BytesIO(content), engine="openpyxl")
+    except Exception:
+        pass
 
-    if "text/csv" in content_type:
-        return pd.read_csv(io.BytesIO(response.content))
-    elif "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type:
-        return pd.read_excel(io.BytesIO(response.content), engine="openpyxl")
-    else:
-        raise ValueError(f"Unsupported file type: {content_type}")
+    # Try loading as UTF-8 CSV
+    try:
+        return pd.read_csv(io.BytesIO(content), encoding="utf-8", on_bad_lines="skip")
+    except Exception:
+        pass
 
-# Core processing function
+    # Try ISO-8859-1 fallback
+    try:
+        return pd.read_csv(io.BytesIO(content), encoding="ISO-8859-1", on_bad_lines="skip")
+    except Exception:
+        raise ValueError(f"Unsupported or unreadable file format from: {file_url}")
+
+# Core processing logic
 def process_site_diary(file_path: str) -> dict:
     df = load_file(file_path)
 
@@ -87,7 +96,7 @@ def process_site_diary(file_path: str) -> dict:
     # Convert duration to numeric
     df["Duration_min"] = df["Duration"].astype(str).str.extract(r'(\d+)').astype(float)
 
-    # Export cleaned data to temp files
+    # Save to temporary directory
     output_dir = tempfile.gettempdir()
     cleaned_output_path = os.path.join(output_dir, "final_cleaned_site_diary.csv")
     filtered_output_path = os.path.join(output_dir, "filtered_out_site_diary.csv")
@@ -106,7 +115,7 @@ def process_site_diary(file_path: str) -> dict:
         "filtered_out_df_dict": filtered_out_df.to_dict(orient='records')
     }
 
-# For local testing
+# Local run support (optional for Render)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
