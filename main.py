@@ -6,8 +6,10 @@ import os
 import tempfile
 import traceback
 import requests
+import numpy as np
 
 app = FastAPI()
+
 
 # -----------------------------
 # Root health check
@@ -31,7 +33,21 @@ class ToolInput(BaseModel):
 def run_tool(request: ToolInput):
     file_path = request.file_path
     try:
-        return process_site_diary(file_path)
+        result = process_site_diary(file_path)
+        # ✅ Convert all NaN / inf / -inf to None before sending JSON
+        def clean_json(obj):
+            if isinstance(obj, list):
+                return [clean_json(x) for x in obj]
+            elif isinstance(obj, dict):
+                return {k: clean_json(v) for k, v in obj.items()}
+            elif isinstance(obj, float):
+                if np.isnan(obj) or np.isinf(obj):
+                    return None
+                return obj
+            return obj
+
+        return clean_json(result)
+
     except Exception as e:
         return {
             "error": "Failed to process file.",
@@ -112,28 +128,28 @@ def process_site_diary(file_url: str) -> dict:
     df["Shift_Type"] = df["Shift"].astype(str).str.extract(r'^(Day|Night)', expand=False)
     df["Duration_min"] = pd.to_numeric(df["Duration"].astype(str).str.extract(r'(\d+)')[0], errors="coerce")
 
-    # Convert NaN/NaT to None before JSON serialization
-    df_json = df.where(pd.notnull(df), None)
-    filtered_json = filtered_out_df.where(pd.notnull(filtered_out_df), None)
+    # Replace all NaN / inf / -inf with None for JSON-safe output
+    df = df.replace({np.nan: None, np.inf: None, -np.inf: None})
+    filtered_out_df = filtered_out_df.replace({np.nan: None, np.inf: None, -np.inf: None})
 
     # Export cleaned + filtered CSVs
     output_dir = tempfile.gettempdir()
     cleaned_path = os.path.join(output_dir, "final_cleaned_site_diary.csv")
     filtered_path = os.path.join(output_dir, "filtered_out_site_diary.csv")
-    df_json.to_csv(cleaned_path, index=False, encoding='utf-8-sig')
-    filtered_json.to_csv(filtered_path, index=False, encoding='utf-8-sig')
+    df.to_csv(cleaned_path, index=False, encoding='utf-8-sig')
+    filtered_out_df.to_csv(filtered_path, index=False, encoding='utf-8-sig')
 
-    print(f"✅ Processed successfully. Cleaned rows: {len(df_json)}, Filtered out: {len(filtered_json)}")
+    print(f"✅ Processed successfully. Cleaned rows: {len(df)}, Filtered out: {len(filtered_out_df)}")
 
     return {
         "cleaned_file_path": cleaned_path,
         "filtered_file_path": filtered_path,
-        "num_cleaned_rows": len(df_json),
-        "num_filtered_rows": len(filtered_json),
+        "num_cleaned_rows": len(df),
+        "num_filtered_rows": len(filtered_out_df),
         "categories_retained": valid_classes,
         "categories_removed": filtered_out_classes,
-        "cleaned_df_dict": df_json.to_dict(orient='records'),
-        "filtered_out_df_dict": filtered_json.to_dict(orient='records')
+        "cleaned_df_dict": df.to_dict(orient='records'),
+        "filtered_out_df_dict": filtered_out_df.to_dict(orient='records')
     }
 
 
